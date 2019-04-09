@@ -52,170 +52,139 @@
 #include <opensm/osm_log.h>
 
 /** =========================================================================
- * This is a simple example plugin which logs some of the events the OSM
- * generates to this interface.
  */
-#define SAMPLE_PLUGIN_OUTPUT_FILE "/tmp/osm_sample_event_plugin_output"
-typedef struct _log_events {
-	FILE *log_file;
-	osm_log_t *osmlog;
-} _log_events_t;
+typedef struct _plugin
+{
+	osm_opensm_t *osm;
+	// other fields...
+} plugin_t;
 
 /** =========================================================================
+ * Forward declarations
+ */
+static int plugin_build_lid_matrices(IN void *context);
+static int plugin_ucast_build_fwd_tables(IN void *context);
+static void plugin_ucast_dump_tables(IN void *context);
+static void plugin_update_sl2vl(void *context, IN osm_physp_t *port, IN uint8_t in_port_num, IN uint8_t out_port_num, IN OUT ib_slvl_table_t *t);
+static void plugin_update_vlarb(void *context, IN osm_physp_t *port, IN uint8_t port_num, IN OUT ib_vl_arb_table_t *block, unsigned block_length, unsigned block_num);
+static uint8_t plugin_path_sl(IN void *context, IN uint8_t path_sl_hint, IN const ib_net16_t slid, IN const ib_net16_t dlid);
+static ib_api_status_t plugin_mcast_build_stree(IN void *context, IN OUT osm_mgrp_box_t *mgb);
+static void plugin_destroy_routine_engine(IN void *context);
+int routine_engine_setup(osm_routing_engine_t *engine, osm_opensm_t *osm);
+
+/** =========================================================================
+ * Implement plugin functions
  */
 static void *construct(osm_opensm_t *osm)
+{		
+	plugin_t * plugin = (plugin_t *) calloc(1, sizeof(plugin_t));
+	plugin->osm = osm;
+
+	routing_engine_module_t plugin_routine_engine_module = {
+		 "routine_engine_plugin",
+		  OSM_ROUTING_ENGINE_TYPE_UNKNOWN,
+		  routine_engine_setup,
+		  plugin,
+	};
+
+
+	osm_opensm_register_routing_engine(osm, &plugin_routine_engine_module, plugin);
+	
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "plugin.construct => routine engine '%s' has been registered with type '%d'\n", 
+		plugin_routine_engine_module.name, plugin_routine_engine_module.type);
+
+	return ((void *)plugin);
+}
+
+static void report(void *context, osm_epi_event_id_t event_id, void *event_data)
 {
-	_log_events_t *log = malloc(sizeof(*log));
-	if (!log)
-		return (NULL);
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "plugin.report\n");
+}
 
-	log->log_file = fopen(SAMPLE_PLUGIN_OUTPUT_FILE, "a+");
-
-	if (!(log->log_file)) {
-		osm_log(&osm->log, OSM_LOG_ERROR,
-			"Sample Event Plugin: Failed to open output file \"%s\"\n",
-			SAMPLE_PLUGIN_OUTPUT_FILE);
-		free(log);
-		return (NULL);
-	}
-
-	log->osmlog = &osm->log;
-	return ((void *)log);
+static void destroy(void *context)
+{
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "plugin.destroy\n");
 }
 
 /** =========================================================================
+ * Implement routine engine functions
  */
-static void destroy(void *_log)
+
+int routine_engine_setup(osm_routing_engine_t *engine, osm_opensm_t *osm)
 {
-	_log_events_t *log = (_log_events_t *) _log;
-	fclose(log->log_file);
-	free(log);
+	plugin_t *plugin = (plugin_t *) engine->context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "routine_engine_plugin.routine_engine_setup\n");
+
+	engine->build_lid_matrices = plugin_build_lid_matrices;
+	engine->ucast_build_fwd_tables = plugin_ucast_build_fwd_tables;
+	engine->ucast_dump_tables = plugin_ucast_dump_tables;
+	engine->update_sl2vl = plugin_update_sl2vl;
+	engine->update_vlarb = plugin_update_vlarb;
+	engine->path_sl = plugin_path_sl;
+	engine->mcast_build_stree = plugin_mcast_build_stree;
+	engine->destroy = plugin_destroy_routine_engine;
+
+	return 0;
 }
 
-/** =========================================================================
- */
-static void handle_port_counter(_log_events_t * log, osm_epi_pe_event_t * pc)
+static int plugin_build_lid_matrices(IN void *context)
 {
-	if (pc->symbol_err_cnt > 0
-	    || pc->link_err_recover > 0
-	    || pc->link_downed > 0
-	    || pc->rcv_err > 0
-	    || pc->rcv_rem_phys_err > 0
-	    || pc->rcv_switch_relay_err > 0
-	    || pc->xmit_discards > 0
-	    || pc->xmit_constraint_err > 0
-	    || pc->rcv_constraint_err > 0
-	    || pc->link_integrity > 0
-	    || pc->buffer_overrun > 0
-	    || pc->vl15_dropped > 0
-	    || pc->xmit_wait > 0) {
-		fprintf(log->log_file,
-			"Port counter errors for node 0x%" PRIx64
-			" (%s) port %d\n", pc->port_id.node_guid,
-			pc->port_id.node_name, pc->port_id.port_num);
-	}
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_ERROR, "routine_engine_plugin.build_lid_matrices\n");
+	return 0;
 }
 
-/** =========================================================================
- */
-static void
-handle_port_counter_ext(_log_events_t * log, osm_epi_dc_event_t * epc)
+static int plugin_ucast_build_fwd_tables(IN void *context)
 {
-	fprintf(log->log_file,
-		"Recieved Data counters for node 0x%" PRIx64 " (%s) port %d\n",
-		epc->port_id.node_guid,
-		epc->port_id.node_name, epc->port_id.port_num);
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "routine_engine_plugin.ucast_build_fwd_tables\n");
+	return 0;
 }
 
-/** =========================================================================
- */
-static void handle_port_select(_log_events_t * log, osm_epi_ps_event_t * ps)
+static void plugin_ucast_dump_tables(IN void *context)
 {
-	if (ps->xmit_wait > 0) {
-		fprintf(log->log_file,
-			"Port select Xmit Wait counts for node 0x%" PRIx64
-			" (%s) port %d\n", ps->port_id.node_guid,
-			ps->port_id.node_name, ps->port_id.port_num);
-	}
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "routine_engine_plugin.ucast_dump_tables\n");
 }
 
-/** =========================================================================
- */
-static void handle_trap_event(_log_events_t *log, ib_mad_notice_attr_t *p_ntc)
+static void plugin_update_sl2vl(void *context,
+	IN osm_physp_t *port,
+	IN uint8_t in_port_num, IN uint8_t out_port_num,
+	IN OUT ib_slvl_table_t *t)
 {
-	if (ib_notice_is_generic(p_ntc)) {
-		fprintf(log->log_file,
-			"Generic trap type %d; event %d; from LID %u\n",
-			ib_notice_get_type(p_ntc),
-			cl_ntoh16(p_ntc->g_or_v.generic.trap_num),
-			cl_ntoh16(p_ntc->issuer_lid));
-	} else {
-		fprintf(log->log_file,
-			"Vendor trap type %d; from LID %u\n",
-			ib_notice_get_type(p_ntc),
-			cl_ntoh16(p_ntc->issuer_lid));
-	}
-
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "routine_engine_plugin.update_sl2vl\n");
 }
 
-/** =========================================================================
- */
-static void handle_lft_change_event(_log_events_t *log,
-				    osm_epi_lft_change_event_t *lft_change)
+static void plugin_update_vlarb(void *context,
+	IN osm_physp_t *port, IN uint8_t port_num,
+	IN OUT ib_vl_arb_table_t *block, unsigned block_length, unsigned block_num)
 {
-	fprintf(log->log_file,
-		"LFT changed for switch 0x%" PRIx64 " flags 0x%x LFTTop %u block %d\n",
-		cl_ntoh64(osm_node_get_node_guid(lft_change->p_sw->p_node)),
-		lft_change->flags, lft_change->lft_top, lft_change->block_num);
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "routine_engine_plugin.update_vlarb\n");
 }
 
-/** =========================================================================
- */
-static void report(void *_log, osm_epi_event_id_t event_id, void *event_data)
+static uint8_t plugin_path_sl(IN void *context,
+	IN uint8_t path_sl_hint, IN const ib_net16_t slid, IN const ib_net16_t dlid)
 {
-	_log_events_t *log = (_log_events_t *) _log;
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "routine_engine_plugin.path_sl\n");
+	return 0;
+}
 
-	switch (event_id) {
-	case OSM_EVENT_ID_PORT_ERRORS:
-		handle_port_counter(log, (osm_epi_pe_event_t *) event_data);
-		break;
-	case OSM_EVENT_ID_PORT_DATA_COUNTERS:
-		handle_port_counter_ext(log, (osm_epi_dc_event_t *) event_data);
-		break;
-	case OSM_EVENT_ID_PORT_SELECT:
-		handle_port_select(log, (osm_epi_ps_event_t *) event_data);
-		break;
-	case OSM_EVENT_ID_TRAP:
-		handle_trap_event(log, (ib_mad_notice_attr_t *) event_data);
-		break;
-	case OSM_EVENT_ID_SUBNET_UP:
-		fprintf(log->log_file, "Subnet up reported\n");
-		break;
-	case OSM_EVENT_ID_HEAVY_SWEEP_START:
-		fprintf(log->log_file, "Heavy sweep started\n");
-		break;
-	case OSM_EVENT_ID_HEAVY_SWEEP_DONE:
-		fprintf(log->log_file, "Heavy sweep completed\n");
-		break;
-	case OSM_EVENT_ID_UCAST_ROUTING_DONE:
-		fprintf(log->log_file, "Unicast routing completed %d\n",
-			(osm_epi_ucast_routing_flags_t) event_data);
-		break;
-	case OSM_EVENT_ID_STATE_CHANGE:
-		fprintf(log->log_file, "SM state changed\n");
-		break;
-	case OSM_EVENT_ID_SA_DB_DUMPED:
-		fprintf(log->log_file, "SA DB dump file updated\n");
-		break;
-	case OSM_EVENT_ID_LFT_CHANGE:
-		handle_lft_change_event(log, (osm_epi_lft_change_event_t *) event_data);
-		break;
-	case OSM_EVENT_ID_MAX:
-	default:
-		osm_log(log->osmlog, OSM_LOG_ERROR,
-			"Unknown event (%d) reported to plugin\n", event_id);
-	}
-	fflush(log->log_file);
+static ib_api_status_t plugin_mcast_build_stree(IN void *context, IN OUT osm_mgrp_box_t *mgb)
+{
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "routine_engine_plugin.mcast_build_stree\n");
+	return IB_SUCCESS;
+}
+
+static void plugin_destroy_routine_engine(IN void *context)
+{
+	plugin_t *plugin = (plugin_t *) context;
+	OSM_LOG(&plugin->osm->log, OSM_LOG_INFO, "routine_engine_plugin.destroy_routine_engine\n");
 }
 
 /** =========================================================================

@@ -50,6 +50,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <complib/cl_dispatcher.h>
+#include <complib/cl_list.h>
 #include <complib/cl_passivelock.h>
 #include <opensm/osm_file_ids.h>
 #define FILE_ID OSM_FILE_OPENSM_C
@@ -64,10 +65,7 @@
 #include <opensm/osm_event_plugin.h>
 #include <opensm/osm_congestion_control.h>
 
-struct routing_engine_module {
-	const char *name;
-	int (*setup) (struct osm_routing_engine *, osm_opensm_t *);
-};
+
 
 extern int osm_ucast_minhop_setup(struct osm_routing_engine *, osm_opensm_t *);
 extern int osm_ucast_updn_setup(struct osm_routing_engine *, osm_opensm_t *);
@@ -81,86 +79,127 @@ extern int osm_ucast_nue_setup(struct osm_routing_engine *, osm_opensm_t *);
 extern int osm_ucast_sssp_setup(struct osm_routing_engine *, osm_opensm_t *);
 extern int osm_ucast_dfsssp_setup(struct osm_routing_engine *, osm_opensm_t *);
 
-static const struct routing_engine_module routing_modules[] = {
-	{"minhop", osm_ucast_minhop_setup},
-	{"updn", osm_ucast_updn_setup},
-	{"dnup", osm_ucast_dnup_setup},
-	{"file", osm_ucast_file_setup},
-	{"ftree", osm_ucast_ftree_setup},
-	{"lash", osm_ucast_lash_setup},
-	{"dor", osm_ucast_dor_setup},
-	{"torus-2QoS", osm_ucast_torus2QoS_setup},
-	{"nue", osm_ucast_nue_setup},
-	{"dfsssp", osm_ucast_dfsssp_setup},
-	{"sssp", osm_ucast_sssp_setup},
-	{NULL, NULL}
+static cl_list_t routing_modules;
+static osm_routing_engine_type_t last_routine_engine_type = OSM_ROUTING_ENGINE_TYPE_FIRST_PLUGIN;
+
+static routing_engine_module_t static_routing_modules[] = {
+	{"none", OSM_ROUTING_ENGINE_TYPE_NONE, NULL},
+	{"minhop", OSM_ROUTING_ENGINE_TYPE_MINHOP, osm_ucast_minhop_setup},
+	{"updn", OSM_ROUTING_ENGINE_TYPE_UPDN, osm_ucast_updn_setup},
+	{"dnup", OSM_ROUTING_ENGINE_TYPE_DNUP, osm_ucast_dnup_setup},
+	{"file", OSM_ROUTING_ENGINE_TYPE_FILE, osm_ucast_file_setup},
+	{"ftree", OSM_ROUTING_ENGINE_TYPE_FTREE, osm_ucast_ftree_setup},
+	{"lash", OSM_ROUTING_ENGINE_TYPE_LASH, osm_ucast_lash_setup},
+	{"dor", OSM_ROUTING_ENGINE_TYPE_DOR, osm_ucast_dor_setup},
+	{"torus-2QoS", OSM_ROUTING_ENGINE_TYPE_TORUS_2QOS, osm_ucast_torus2QoS_setup},
+	{"nue", OSM_ROUTING_ENGINE_TYPE_NUE, osm_ucast_nue_setup},
+	{"dfsssp", OSM_ROUTING_ENGINE_TYPE_DFSSSP, osm_ucast_dfsssp_setup},
+	{"sssp", OSM_ROUTING_ENGINE_TYPE_SSSP, osm_ucast_sssp_setup}
 };
+
+// Forward declarations
+static cl_status_t _match_routine_engine_type(IN const void *const p_object, IN void *context);
+static cl_status_t _match_routine_engine_str(IN const void *const p_object, IN void *context);
+static void append_routing_engine(osm_opensm_t *osm, struct osm_routing_engine *routing_engine);
+static struct osm_routing_engine *setup_routing_engine(osm_opensm_t *osm, const char *name);
+static void dump_routine_engine(IN void *const p_object, IN void *context);
+static void dump_routine_engines(IN osm_opensm_t *osm, IN osm_log_level_t level);
+static void setup_routing_engines(osm_opensm_t *osm, const char *engine_names);
+static void destroy_routing_engines(osm_opensm_t *osm);
+
+cl_status_t osm_opensm_register_routing_engine(IN osm_opensm_t *osm, IN OUT routing_engine_module_t *module, void *context)
+{
+	cl_status_t status;
+
+	if (!osm || !module) {
+		return CL_INVALID_PARAMETER;
+	}
+
+	if (osm_routing_engine_type(module->name) != OSM_ROUTING_ENGINE_TYPE_UNKNOWN) {
+		OSM_LOG(&osm->log, OSM_LOG_ERROR, "Routine engine with name '%s' was aleady registered with type: '%d'\n",
+			module->name, osm_routing_engine_type(module->name));
+		return CL_DUPLICATE;
+	}
+
+	if (strcmp(osm_routing_engine_type_str(module->type), "unknown") != 0) {
+		OSM_LOG(&osm->log, OSM_LOG_ERROR, "Routine engine with type '%d' was aleady registered with name: '%s'\n",
+			module->type, osm_routing_engine_type_str(module->type));
+		return CL_DUPLICATE;
+	}
+
+	if (module->type == OSM_ROUTING_ENGINE_TYPE_UNKNOWN) {
+		OSM_LOG(&osm->log, OSM_LOG_VERBOSE, "Assign type '%d' to routine engine '%s'\n", last_routine_engine_type, module->name);
+		module->type = last_routine_engine_type++;
+	}
+
+	OSM_LOG(&osm->log, OSM_LOG_VERBOSE,	"Register routine engine with name: '%s' and type: '%d'\n", module->name, module->type);
+
+	routing_engine_module_t *copy = (routing_engine_module_t*) malloc(sizeof(routing_engine_module_t));
+	copy->name = strdup(module->name);
+	copy->setup = module->setup;
+	copy->type = module->type;
+	copy->context = context;
+
+	status = cl_list_insert_tail(&routing_modules, copy);
+	return status;
+}
+
+static cl_status_t _match_routine_engine_type(IN const void *const p_object, IN void *context)
+{
+	osm_routing_engine_type_t type = (osm_routing_engine_type_t) context;
+	routing_engine_module_t *module = (routing_engine_module_t*) p_object;
+	
+	if (module->type == type)
+		return CL_SUCCESS;
+	else
+		return CL_NOT_FOUND;
+}
 
 const char *osm_routing_engine_type_str(IN osm_routing_engine_type_t type)
 {
-	switch (type) {
-	case OSM_ROUTING_ENGINE_TYPE_NONE:
-		return "none";
-	case OSM_ROUTING_ENGINE_TYPE_MINHOP:
-		return "minhop";
-	case OSM_ROUTING_ENGINE_TYPE_UPDN:
-		return "updn";
-	case OSM_ROUTING_ENGINE_TYPE_DNUP:
-		return "dnup";
-	case OSM_ROUTING_ENGINE_TYPE_FILE:
-		return "file";
-	case OSM_ROUTING_ENGINE_TYPE_FTREE:
-		return "ftree";
-	case OSM_ROUTING_ENGINE_TYPE_LASH:
-		return "lash";
-	case OSM_ROUTING_ENGINE_TYPE_DOR:
-		return "dor";
-	case OSM_ROUTING_ENGINE_TYPE_TORUS_2QOS:
-		return "torus-2QoS";
-	case OSM_ROUTING_ENGINE_TYPE_NUE:
-		return "nue";
-	case OSM_ROUTING_ENGINE_TYPE_DFSSSP:
-		return "dfsssp";
-	case OSM_ROUTING_ENGINE_TYPE_SSSP:
-		return "sssp";
-	default:
-		break;
+	cl_list_iterator_t iter;
+	routing_engine_module_t *module;
+
+	iter = cl_list_find_from_head(&routing_modules, _match_routine_engine_type, (void *)type);
+	if (iter != cl_list_end(&routing_modules)) {
+		module = (routing_engine_module_t *) cl_list_obj(iter);
+		return module->name;
 	}
+	
 	return "unknown";
 }
 
-osm_routing_engine_type_t osm_routing_engine_type(IN const char *str)
+static cl_status_t _match_routine_engine_str(IN const void *const p_object, IN void *context)
 {
+	const char *name = (char *) context;
+	routing_engine_module_t *module = (routing_engine_module_t*) p_object;
+
 	/* For legacy reasons, consider a NULL pointer and the string
 	 * "null" as the minhop routing engine.
 	 */
-	if (!str || !strcasecmp(str, "null")
-	    || !strcasecmp(str, "minhop"))
-		return OSM_ROUTING_ENGINE_TYPE_MINHOP;
-	else if (!strcasecmp(str, "none"))
-		return OSM_ROUTING_ENGINE_TYPE_NONE;
-	else if (!strcasecmp(str, "updn"))
-		return OSM_ROUTING_ENGINE_TYPE_UPDN;
-	else if (!strcasecmp(str, "dnup"))
-		return OSM_ROUTING_ENGINE_TYPE_DNUP;
-	else if (!strcasecmp(str, "file"))
-		return OSM_ROUTING_ENGINE_TYPE_FILE;
-	else if (!strcasecmp(str, "ftree"))
-		return OSM_ROUTING_ENGINE_TYPE_FTREE;
-	else if (!strcasecmp(str, "lash"))
-		return OSM_ROUTING_ENGINE_TYPE_LASH;
-	else if (!strcasecmp(str, "dor"))
-		return OSM_ROUTING_ENGINE_TYPE_DOR;
-	else if (!strcasecmp(str, "torus-2QoS"))
-		return OSM_ROUTING_ENGINE_TYPE_TORUS_2QOS;
-	else if (!strcasecmp(str, "nue"))
-		return OSM_ROUTING_ENGINE_TYPE_NUE;
-	else if (!strcasecmp(str, "sssp"))
-		return OSM_ROUTING_ENGINE_TYPE_SSSP;
-	else if (!strcasecmp(str, "dfsssp"))
-		return OSM_ROUTING_ENGINE_TYPE_DFSSSP;
+	if (!name || !strcasecmp(name, "null")) {
+		name = "minhop";
+	}
+
+	if (strcasecmp(module->name, name) == 0)
+		return CL_SUCCESS;
 	else
-		return OSM_ROUTING_ENGINE_TYPE_UNKNOWN;
+		return CL_NOT_FOUND;
+}
+
+
+osm_routing_engine_type_t osm_routing_engine_type(IN const char *str)
+{
+	cl_list_iterator_t iter;
+	routing_engine_module_t *module;
+
+	iter = cl_list_find_from_head(&routing_modules, _match_routine_engine_str, (void *)str);
+	if (iter != cl_list_end(&routing_modules)) {
+		module = (routing_engine_module_t *) cl_list_obj(iter);
+		return module->type;
+	}
+	
+	return OSM_ROUTING_ENGINE_TYPE_UNKNOWN;
 }
 
 static void append_routing_engine(osm_opensm_t *osm,
@@ -186,14 +225,16 @@ static struct osm_routing_engine *setup_routing_engine(osm_opensm_t *osm,
 						       const char *name)
 {
 	struct osm_routing_engine *re;
-	const struct routing_engine_module *m;
+	const routing_engine_module_t *m;
+	cl_list_iterator_t iter;
 
 	if (!strcmp(name, "no_fallback")) {
 		osm->no_fallback_routing_engine = TRUE;
 		return NULL;
 	}
 
-	for (m = routing_modules; m->name && *m->name; m++) {
+	for (iter = cl_list_head(&routing_modules); iter != cl_list_end(&routing_modules); iter = cl_list_next(iter)) {
+		m = (routing_engine_module_t*)cl_list_obj(iter);
 		if (!strcmp(m->name, name)) {
 			re = malloc(sizeof(struct osm_routing_engine));
 			if (!re) {
@@ -204,6 +245,8 @@ static struct osm_routing_engine *setup_routing_engine(osm_opensm_t *osm,
 			memset(re, 0, sizeof(struct osm_routing_engine));
 
 			re->name = m->name;
+			re->context = m->context;
+			OSM_LOG(&osm->log, OSM_LOG_VERBOSE,"setup of routing engine '%s' ...\n", name);
 			re->type = osm_routing_engine_type(m->name);
 			if (m->setup(re, osm)) {
 				OSM_LOG(&osm->log, OSM_LOG_VERBOSE,
@@ -221,7 +264,7 @@ static struct osm_routing_engine *setup_routing_engine(osm_opensm_t *osm,
 	}
 
 	OSM_LOG(&osm->log, OSM_LOG_ERROR,
-		"cannot find or setup routing engine \'%s\'\n", name);
+		"cannot find or setup routine engine \'%s\'\n", name);
 	return NULL;
 }
 
@@ -230,6 +273,8 @@ static void setup_routing_engines(osm_opensm_t *osm, const char *engine_names)
 	char *name, *str, *p;
 	struct osm_routing_engine *re;
 
+	dump_routine_engines(osm, OSM_LOG_VERBOSE);
+
 	if (engine_names && *engine_names) {
 		str = strdup(engine_names);
 		name = strtok_r(str, ", \t\n", &p);
@@ -237,6 +282,8 @@ static void setup_routing_engines(osm_opensm_t *osm, const char *engine_names)
 			re = setup_routing_engine(osm, name);
 			if (re)
 				append_routing_engine(osm, re);
+			else
+				OSM_LOG(&osm->log, OSM_LOG_ERROR, "Failed to setup routine engine \'%s\'\n", name);
 			name = strtok_r(NULL, ", \t\n", &p);
 		}
 		free(str);
@@ -245,10 +292,59 @@ static void setup_routing_engines(osm_opensm_t *osm, const char *engine_names)
 		setup_routing_engine(osm, "minhop");
 }
 
+typedef struct dump_routine_engine_params {
+	osm_opensm_t *osm;
+	osm_log_level_t level;
+} dump_routine_engine_params_t;
+
+static void dump_routine_engine(IN void *const p_object, IN void *context)
+{
+	dump_routine_engine_params_t *params = (dump_routine_engine_params_t *) context;
+	routing_engine_module_t *module = (routing_engine_module_t*) p_object;
+
+	OSM_LOG(&params->osm->log, params->level, "    name: %s - Type: %d\n", module->name, module->type);
+}
+
+static void dump_routine_engines(IN osm_opensm_t *osm, IN osm_log_level_t level) {
+	dump_routine_engine_params_t params = {osm, level};
+	cl_list_apply_func(&routing_modules, dump_routine_engine, (void *) &params);
+}
+
+void osm_routine_modules_construct(IN osm_opensm_t * p_osm)
+{
+	size_t i, len = sizeof(static_routing_modules) / sizeof(routing_engine_module_t);
+	
+	cl_list_construct(&routing_modules);
+	cl_list_init(&routing_modules, len);
+	for (i=0; i < len; i++) {
+		osm_opensm_register_routing_engine(p_osm, &(static_routing_modules[i]), NULL);
+	}
+}
+
+static void __free_routing_module(void *p_object, void *context)
+{
+	routing_engine_module_t *p_module = (routing_engine_module_t*) p_object;
+	osm_opensm_t *p_osm = (osm_opensm_t*) context;
+	if (p_module) {
+		if (p_module->name) {
+			free(p_module->name);
+		}
+		free(p_module);
+	}
+}
+
+void osm_routine_modules_destroy(IN osm_opensm_t * p_osm)
+{
+	cl_list_apply_func(&routing_modules, __free_routing_module, p_osm);
+	cl_list_remove_all(&routing_modules);
+	cl_list_destroy(&routing_modules);
+}
+
 void osm_opensm_construct(IN osm_opensm_t * p_osm)
 {
 	memset(p_osm, 0, sizeof(*p_osm));
 	p_osm->osm_version = OSM_VERSION;
+	osm_routine_modules_construct(p_osm);
 	osm_subn_construct(&p_osm->subn);
 	osm_db_construct(&p_osm->db);
 	osm_log_construct(&p_osm->log);
@@ -344,10 +440,11 @@ void osm_opensm_destroy(IN osm_opensm_t * p_osm)
 		osm_sa_db_file_dump(p_osm);
 
 	/* do the destruction in reverse order as init */
-	destroy_plugins(p_osm);
 	destroy_routing_engines(p_osm);
+	destroy_plugins(p_osm);
 	osm_sa_destroy(&p_osm->sa);
 	osm_sm_destroy(&p_osm->sm);
+	osm_routine_modules_destroy(p_osm);
 #ifdef ENABLE_OSM_PERF_MGR
 	osm_perfmgr_destroy(&p_osm->perfmgr);
 #endif				/* ENABLE_OSM_PERF_MGR */
