@@ -114,7 +114,7 @@ typedef enum _osm_routing_engine_type {
 	OSM_ROUTING_ENGINE_TYPE_SSSP,
 	OSM_ROUTING_ENGINE_TYPE_DFSSSP,
 	OSM_ROUTING_ENGINE_TYPE_UNKNOWN,
-	OSM_ROUTING_ENGINE_TYPE_FIRST_PLUGIN = 100
+	OSM_ROUTING_ENGINE_TYPE_EXTERNAL = 100
 } osm_routing_engine_type_t;
 /***********/
 
@@ -156,9 +156,9 @@ typedef struct osm_routing_engine {
 *	routing_engine_module_t
 *
 * DESCRIPTION
-*	Routine engine module structure.
+*	Routing engine module structure.
 *
-*	This structure is used to register a new routine engine
+*	This structure is used to register a new routing engine
 *
 * SYNOPSIS
 */
@@ -171,13 +171,13 @@ typedef struct routing_engine_module {
 /*
 * FIELDS
 * 	name
-* 		Name of the routine engine
+* 		Name of the routing engine
 *
 *	type
-*		Type (unique identifier) of the routine engine. If set to OSM_ROUTING_ENGINE_TYPE_UNKNOWN, a new unique type will be generated.
+*		Type (unique identifier) of the routing engine. If set to OSM_ROUTING_ENGINE_TYPE_UNKNOWN, a new unique type will be generated.
 *
 *	setup
-*		function to setup the routine engine's callbacks
+*		function to setup the routing engine's callbacks
 *
 *	context
 *		User defined context
@@ -646,7 +646,7 @@ osm_opensm_wait_for_subnet_up(IN osm_opensm_t * p_osm, IN uint32_t wait_us,
 *	osm_opensm_register_routing_engine
 *
 * DESCRIPTION
-*	Register a new routine engine.
+*	Register a new routing engine.
 *
 * SYNOPSIS
 */
@@ -655,13 +655,13 @@ cl_status_t osm_opensm_register_routing_engine(IN osm_opensm_t *osm, IN OUT rout
 * PARAMETERS
 *	type
 *       [in] Pointer to a osm_opensm_t object
-*		[in] Pointer to a osm_routing_engine_t object to be registered as a new routine engine.
+*		[in] Pointer to a osm_routing_engine_t object to be registered as a new routing engine.
 *            If module->type is OSM_ROUTING_ENGINE_TYPE_UNKNOWN, a new type will be assigned to the module
 *		[in] Pointer to a user-defined context that will be set in the osm_routing_engine_t structure
 *
 * RETURN VALUES
-*	CL_SUCCESS if the routine engine was registered successfully.
-*   CL_DUPLICATE if a routine engine with the same name or type was already registered.
+*	CL_SUCCESS if the routing engine was registered successfully.
+*   CL_DUPLICATE if a routing engine with the same name or type was already registered.
 *
 * NOTES
 *
